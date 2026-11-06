@@ -1,0 +1,13 @@
+# Throwaway IMAP server for the integration tests (tests/test_imap_server.py): plain IMAP on 127.0.0.1 only,
+# any user name, password "pass", mail lives inside the container. Never point it at real mail.
+#   docker compose up -d test-imap
+#   EMAIL_OPS_IMAP_TEST=1 python -m pytest -q
+services:
+  test-imap:
+    image: dovecot/dovecot:2.4.2
+    environment:
+      USER_PASSWORD: pass
+    ports:
+      - "127.0.0.1:31143:31143"
+    volumes:
+      - ./tests/dovecot-test.conf:/etc/dovecot/conf.d/zz-test.conf:ro

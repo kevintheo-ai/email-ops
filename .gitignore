@@ -1,0 +1,11 @@
+# Your accounts and the guard log never go into git.
+/config/email-ops.toml
+/state/
+
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.DS_Store
+.claude/settings.local.json

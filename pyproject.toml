@@ -1,0 +1,27 @@
+[project]
+name = "email-ops"
+version = "0.1.0"
+description = "A Claude Code skill that goes through your inbox with you, mail by mail, and runs every mail through a prompt-injection guard (Jev by TypeSafe AI) before the agent reads it. No code in this repo sends mail."
+requires-python = ">=3.11"
+license = "MIT"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "I", "UP", "S", "B", "SIM", "RUF"]
+ignore = [
+    "E501",  # long lines are left to the formatter (the Jev questions stay verbatim)
+    "RUF001",  # ambiguous characters: the guard looks for exactly these on purpose
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["injection_guard", "mail"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["scripts"]

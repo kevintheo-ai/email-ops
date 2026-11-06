@@ -1,0 +1,22 @@
+# email-ops settings. Copy this file to config/email-ops.toml (git-ignored), or point EMAIL_OPS_CONFIG at
+# your copy. Secrets never go in here: each account names an environment variable that holds its password,
+# and the guard reads TYPESAFE_API_KEY from the environment.
+
+[guard]
+enabled = true
+review_noul = 0.3            # REVIEW when the overall "injected instruction" Noul reaches this,
+hazard_noul = 0.9            # or one of the five hazard Nouls reaches this, or hidden characters show up
+block_harm = 2               # BLOCK = REVIEW plus a harm score (0 to 3) of at least this
+budget_usd_per_call = 0.02   # cost cap per mail; a longer text is only partly checked and never passes as OK
+log = "state/guard_log.jsonl"  # one line per check: scores, hash, account and UID, never the text; "" = off
+
+# One block per mailbox. The name after "accounts." is what you pass as --account.
+[accounts.work]
+host = "imap.example.com"
+port = 993                         # optional, 993 by default (IMAP over TLS)
+user = "me@example.com"
+password_env = "EMAIL_OPS_WORK_PASSWORD"
+# address = "me@example.com"       # From address for drafts, if the login is not an address
+# display_name = "Your Name"       # shown with your address in drafts
+# drafts_folder = "Drafts"         # only if the server flags no folder as \Drafts
+# tls = false                      # only for a server on this machine, e.g. the test server in docker-compose.yml
