@@ -23,6 +23,7 @@ import contextlib
 import difflib
 import email
 import email.header
+import html
 import imaplib
 import mimetypes
 import os
@@ -318,7 +319,7 @@ def _part_text(part: Message) -> str:
         return ""
     try:
         return payload.decode(part.get_content_charset() or "utf-8", "replace")
-    except LookupError:  # unknown charset name
+    except (LookupError, ValueError):  # an unknown charset, or one without "replace" support such as idna
         return payload.decode("utf-8", "replace")
 
 
@@ -354,11 +355,9 @@ def body_text(msg: Message) -> str:
 def attachment_parts(msg: Message) -> list[tuple[str, Message]]:
     """Every attachment with a name: named files, unnamed attachments and attached mails."""
     out: list[tuple[str, Message]] = []
-    for part in msg.walk():
-        if part is msg:
-            continue
+    for part in msg.walk():  # the root counts too: a one-part mail can be nothing but a file
         ctype = part.get_content_type()
-        if ctype == "message/rfc822":
+        if ctype == "message/rfc822" and part is not msg:
             fallback = f"attached mail {len(out) + 1}.eml"
         elif part.is_multipart() or not (part.get_filename() or part.get_content_disposition() == "attachment"):
             continue
@@ -503,12 +502,19 @@ def _attachment_text(part: Message) -> str | None:
         inner = part.get_payload(0) if part.is_multipart() else None
         if not isinstance(inner, Message):
             return ""
-        head = [f"{k}: {header(inner.get(k, ''))}" for k in ("From", "Reply-To", "To", "Cc", "Subject")]
-        return "\n".join(head) + "\n\n" + body_text(inner)
+        # every header and every text part, decoded and as they stand (raw HTML with comments); never the base64 of
+        # the saved file, which would carry secrets past the masking
+        head = "\n".join(f"{k}: {header(v)}" for p in inner.walk() for k, v in p.items())
+        return "\n\n".join(
+            [head, *(_attachment_text(p) or "" for p in inner.walk() if p.get_content_maintype() == "text")]
+        )
     if part.get_content_maintype() != "text":
         return None
     declared = _part_text(part)
     as_utf8 = _attachment_bytes(part).decode("utf-8", "replace")  # what a plain text reader sees in the saved file
+    if part.get_content_subtype() == "html":
+        # An entity must not hide a key from the masking. NUL first: UTF-16 read as UTF-8 tears an entity apart.
+        declared, as_utf8 = html.unescape(declared), html.unescape(as_utf8.replace("\x00", ""))
     return declared if as_utf8 == declared else declared + "\n\n" + as_utf8
 
 

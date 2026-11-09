@@ -28,6 +28,7 @@ import fcntl
 import functools
 import hashlib
 import json
+import math
 import os
 import re
 import sys
@@ -87,8 +88,13 @@ _SECRETS = re.compile(
     r"gh[pousr]_[a-zA-Z0-9]{36,}|"
     r"(?:AKIA|ASIA)[0-9A-Z]{16}|(?i:aws_secret[_a-z]*)\s*[=:]\s*[a-zA-Z0-9/+]{40}|"
     r"xox[bp]-[0-9a-zA-Z-]{10,}|sk_live_[0-9a-zA-Z]{24,}|"
-    r"(?i:[\"']?(?:bearer|token|api[_-]?key|passwort|password)[\"']?)\s*[:=]\s*[\"']?[^\s\"']{12,}[\"']?|"
+    r"(?i:[\"']?(?:bearer|token|api[_-]?key|auth[_-]?key|secret|passwort|password)[\"']?)\s*[:=]\s*(?:\"(?:[^\"\\\r\n]|\\.){12,128}\"|\"[^\"\s]{12,}\"?|'(?:[^'\\\r\n]|\\.){12,128}'|'[^'\s]{12,}'?|[^\s\"']\S{11,})|"
     r"(?i:bearer)\s+[A-Za-z0-9._~+/=-]{16,}|"
+    # HTTP headers: one token or the name=value pairs, never the rest of the line, so the words beside them reach Jev.
+    # A cookie name holds no colon, which also keeps a mail of nothing but "cookie:" in linear time.
+    # ponytail: Digest auth stays visible (a one-time hash, not a reusable credential).
+    r"(?i:authorization)[\"']?\s*[:=]\s*[\"']?(?:(?i:basic|ntlm|negotiate)\s+[A-Za-z0-9+/=]{8,}|(?:[A-Za-z0-9-]+\s+)?[A-Za-z0-9._~+/=-]{16,})|"
+    r"(?i:cookie)[\"']?\s*[:=]\s*[\"']?[^\s=;\"',:]+\s*=\s*\"?[^\s;\",]*\"?(?:\s*;\s*[^\s=;\"',:]+\s*=\s*\"?[^\s;\",]*\"?)*|"
     r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b)",
 )
 _IBAN = re.compile(r"\b[A-Z]{2}\d{2}(?:\s?[A-Z0-9]{4}){3,7}(?:\s?[A-Z0-9]{1,4})?\b")
@@ -101,19 +107,36 @@ _VAT = re.compile(
 _PHONE = re.compile(
     r"(?<![\w/.-])(?:(?:\+|00)\d{1,3}[\s./-]?(?:\(0\)[\s.-]?)?\d(?:[\s./-]?\d){6,13}|0\d{2,4}[\s/-]?\d{3,4}[\s-]?\d{2,4}(?:[\s-]?\d{2,3})?)\b"
 )
-# A key block is masked only when its lines are base64, empty or the two classic PEM headers, so words between
-# fake markers stay visible to Jev. Anything masked as a secret marks the mail as not fully checked (see check).
-_PEM = re.compile(
-    r"-----BEGIN [A-Z ]*PRIVATE KEY-----"
-    r"(?:\r?\n[ \t]*(?:[A-Za-z0-9+/=]+[ \t]*|(?:Proc-Type|DEK-Info):[^\r\n]*)?)+"
-    r"(?:\r?\n[ \t]*-----END [A-Z ]*PRIVATE KEY-----|(?=\r?\n?\Z))"
-)
-_URL_CREDENTIALS = re.compile(r"(?<=://)[^\s/@:]+:[^\s/@]+(?=@)")  # scheme://user:password@host
+# A key block runs from its BEGIN marker to the END marker, or to the end of the text when that is missing. Inside it
+# every token that looks like key material goes, wherever it stands (own line, next to words, inside an HTML tag), and
+# all else stays visible to Jev: a fake block cannot hide an instruction and no line shape lets a real key out. Anything
+# masked as a secret marks the mail as not fully checked (see check).
+# ponytail: a short letters-only key tail stays visible (a few characters of a key that is gone); a word of 16 or more
+# letters inside a key block is masked, which only ever means review instead of a Jev score for that word.
+_PEM = re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|\Z)")
+_PEM_MARKER = re.compile(r"-----(?:BEGIN|END) [A-Z ]*PRIVATE KEY-----")
+_PEM_HEADER = re.compile(r"[ \t>]*(?:Proc-Type:\s*\d+,[A-Z-]+|DEK-Info:\s*[A-Z0-9-]+,[0-9A-Fa-f]+)\s*$")
+_PEM_KEY_TOKEN = re.compile(r"[A-Za-z0-9+/=_-]{16,}|[A-Za-z0-9+/=_-]*[0-9+/=][A-Za-z0-9+/=_-]*")
+
+
+def _mask_key_block(block: re.Match[str]) -> str:
+    kept = []
+    for raw in _PEM_MARKER.sub("\n", block[0]).splitlines():
+        rest = "" if _PEM_HEADER.match(raw) else _PEM_KEY_TOKEN.sub("", raw).strip()
+        if any(c.isalnum() for c in rest):
+            kept.append(rest)
+    return "\n".join(["[KEY]", *kept])
+
+
+# scheme://user:password@host: the user may be empty, the password may hold @, ? and # (masked up to the last @ before the
+# host). A link with a port right before ? or # and an @ after it ("example.com:8080?a=b@c") looks the same and is masked
+# too: that costs one review banner, a missed password would leave the machine.
+_URL_CREDENTIALS = re.compile(r"(?<=://)[^\s/@:?#<>\"]*:[^\s/<>\"]+(?=@)")
 _MASKED_SECRETS = (_PEM, _SECRETS, _URL_CREDENTIALS)
-_REDACTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
-    (_PEM, "[KEY]"),
-    (_SECRETS, "[KEY]"),
+_REDACTIONS: tuple[tuple[re.Pattern[str], Any], ...] = (
+    (_SECRETS, "[KEY]"),  # first: masking a key block removes the labels these patterns need
     (_URL_CREDENTIALS, "[KEY]"),
+    (_PEM, _mask_key_block),
     (_BIC, "[BIC]"),  # labelled patterns first: an EORI would otherwise look like an IBAN
     (_EORI, "[EORI]"),
     (_IBAN, "[IBAN]"),
@@ -122,8 +145,14 @@ _REDACTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
 )
 
 
+def _without_nul(text: str) -> str:
+    """UTF-16 read as UTF-8 has NUL between the letters: the secret patterns would miss it."""
+    return text.replace("\x00", "")
+
+
 def redact(text: str) -> str:
     """Mask bank and tax identifiers, credentials and phone numbers before the text leaves the machine."""
+    text = _without_nul(text)
     for pattern, token in _REDACTIONS:
         text = pattern.sub(token, text)
     return text
@@ -305,8 +334,9 @@ def load_config(path: Path | None = None) -> dict[str, Any]:
         section = load_toml(path).get("guard")
         cfg.update(section if isinstance(section, dict) else {})
     for key in ("review_noul", "hazard_noul", "block_harm", "budget_usd_per_call"):
-        try:  # a typo such as review_noul = "0.3" must not break the check
-            cfg[key] = float(cfg[key])
+        try:  # a typo such as review_noul = "0.3x" must not break the check, and NaN would switch it off
+            value = float(cfg[key])
+            cfg[key] = value if math.isfinite(value) else DEFAULT_CONFIG[key]
         except (TypeError, ValueError):
             cfg[key] = DEFAULT_CONFIG[key]
     cfg["enabled"] = cfg["enabled"] is not False
@@ -418,7 +448,7 @@ def check(text: str, ref: str = "", *, config: dict[str, Any] | None = None) -> 
         "model": None,
         "ref": ref,
         "sha": hashlib.sha256(clean.encode("utf-8", "replace")).hexdigest()[:16],
-        "unchecked": ["masked secret"] if any(p.search(text or "") for p in _MASKED_SECRETS) else [],
+        "unchecked": ["masked secret"] if any(p.search(_without_nul(text or "")) for p in _MASKED_SECRETS) else [],
     }
     if not cfg.get("enabled"):
         result["error"] = "disabled"
