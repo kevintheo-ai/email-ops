@@ -92,8 +92,9 @@ then FYI. The overview ends directly with mail #1 in step 4a.
 
    Done when every attachment is opened and the history is read. Then give the situation and a recommendation
    in two lines.
-3. Ask "what do we do?" as a multiple-choice question (AskUserQuestion where available): 2 to 4 concrete
-   options, the recommendation first and marked "(recommended)", for example a reply with its core message,
+3. Ask "what do we do?" with the AskUserQuestion tool, so the user picks from a multiple-choice dialog and types
+   nothing. Only when that tool does not exist, for example in a run without a user, list the choices as plain text.
+   Offer 2 to 4 concrete options, the recommendation first and marked "(recommended)", for example a reply with its core message,
    file into a named folder, skip. Then:
    - reply → 4b
    - file / done → 4c
@@ -101,7 +102,8 @@ then FYI. The overview ends directly with mail #1 in step 4a.
 
 ### 4b: reply, you write, the user sends
 
-Write the reply yourself, in the language and register of the thread. Show it; on the user's OK save it as a
+Write the reply yourself, in the language and register of the thread. Show it, then ask with the AskUserQuestion
+tool whether to save it as a draft, change the wording or discard it; if the user picks saving, save it as a
 draft:
 
 ```bash
@@ -122,8 +124,8 @@ Once a mail is handled (draft saved, decided, or noted) and a fitting folder exi
 ```
 
 - `OK ... checked` is the confirmation; the tool verifies the move itself.
-- No clearly fitting folder: ask with the 2 or 3 most plausible folders (full name and why) plus "leave it in
-  the inbox". Several mails go into one question, at most four at a time. New folders only with the user's OK.
+- No clearly fitting folder: ask with the AskUserQuestion tool and offer the 2 or 3 most plausible folders (full
+  name and why) plus "leave it in the inbox". Several mails go into one question, at most four at a time. New folders only with the user's OK.
 - The trash (`--trash`, recoverable in the mail client) only on the user's word for exactly this mail.
 
 ## Step 5: wrap-up
