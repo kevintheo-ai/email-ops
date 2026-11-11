@@ -5,6 +5,7 @@ EMAIL_OPS_IMAP_TEST=1 python -m pytest -q
 
 import email
 import imaplib
+import json
 import os
 import re
 import secrets
@@ -172,3 +173,29 @@ def test_draft_lands_in_drafts_and_nothing_is_sent(box, capsys, tmp_path):
     assert str(draft["Subject"]) == "Re: Offer for you" and draft["In-Reply-To"] == "<offer-1@example.com>"
     assert draft.get_content().strip() == "Thanks Jane, we will check the offer."
     assert uids(box, "Sent") == [] and uids(box, "INBOX") == [uid]
+
+
+def test_the_draft_is_also_handed_to_draftdesk_when_the_account_says_so(box, offline, capsys, tmp_path, monkeypatch):
+    from test_draftdesk_handoff import _fake_draftdesk
+
+    offline.write_text(offline.read_text(encoding="utf-8") + 'draftdesk_account = "desk"\n', encoding="utf-8")
+    (tmp_path / "bin").mkdir()
+    _fake_draftdesk(tmp_path / "bin", stdout='{"item_id":"20261111-120000-0a1b2c3d","replaced":null}')
+    monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}:/usr/bin:/bin")
+    uid = put(box, offer())
+    reply = tmp_path / "reply.txt"
+    reply.write_text("Thanks Jane, we will check the offer.\n", encoding="utf-8")
+    assert mail.main(["draft", "--account", "test", "--reply-to", str(uid), "--body-file", str(reply)]) == 0
+    out = capsys.readouterr().out
+    assert "OK draft saved in 'Drafts', NOT sent." in out
+    assert "OK handed to Draft Desk as 20261111-120000-0a1b2c3d" in out
+    handed = json.loads((tmp_path / "bin/draft.json").read_text(encoding="utf-8"))
+    (draft_uid,) = uids(box, "Drafts")
+    box.select("Drafts", readonly=True)
+    raw = box.uid("FETCH", str(draft_uid), "(BODY.PEEK[])")[1][0][1]
+    saved = email.message_from_bytes(raw, policy=policy.default)
+    assert handed["mailbox_draft"] == {"message_id": saved["Message-ID"]}
+    assert handed["account"] == "desk" and handed["to"] == ["billing@example.net"]
+    assert handed["body"] == "Thanks Jane, we will check the offer.\n"
+    assert "Please see the offer." in handed["thread"]
+    assert uids(box, "Sent") == []

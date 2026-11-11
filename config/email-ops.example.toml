@@ -19,4 +19,5 @@ password_env = "EMAIL_OPS_WORK_PASSWORD"
 # address = "me@example.com"       # From address for drafts, if the login is not an address
 # display_name = "Your Name"       # shown with your address in drafts
 # drafts_folder = "Drafts"         # only if the server flags no folder as \Drafts
+# draftdesk_account = "work"       # optional: name of the account in Draft Desk, to hand drafts over to it
 # tls = false                      # only for a server on this machine, e.g. the test server in docker-compose.yml

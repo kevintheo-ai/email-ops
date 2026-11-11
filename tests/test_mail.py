@@ -14,21 +14,51 @@ SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 
 
 ALLOWED_IMPORTS = {  # IMAP can store a draft but cannot send; nothing here opens any other network channel
-    "argparse", "base64", "collections", "concurrent", "contextlib", "difflib", "email", "fcntl", "functools",
-    "hashlib", "html", "imaplib", "injection_guard", "json", "math", "os", "pathlib", "re", "secrets", "ssl", "sys",
-    "time", "tomllib", "typesafe_sdk", "typing", "datetime", "__future__", "mimetypes",
+    "argparse", "base64", "collections", "concurrent", "contextlib", "difflib", "draftdesk_handoff", "email", "fcntl",
+    "functools", "hashlib", "html", "imaplib", "injection_guard", "json", "math", "os", "pathlib", "re", "secrets",
+    "shutil", "ssl", "subprocess", "sys", "time", "tomllib", "typesafe_sdk", "typing", "datetime", "__future__",
+    "mimetypes",
 }  # fmt: skip
+
+
+def _subprocess_users(tree: ast.Module) -> set[str]:
+    """The top-level functions that use the subprocess module ('<module>' for code outside a function)."""
+    users = set()
+    for top in tree.body:
+        if any(isinstance(n, ast.Name) and n.id == "subprocess" for n in ast.walk(top)):
+            users.add(top.name if isinstance(top, ast.FunctionDef) else "<module>")
+    return users
+
+
+def test_the_one_program_started_is_draftdesk_add():
+    tree = ast.parse((SCRIPTS / "draftdesk_handoff.py").read_text(encoding="utf-8"))
+    calls = [n for n in ast.walk(tree) if isinstance(n, ast.Call) and ast.unparse(n.func).startswith("subprocess.")]
+    assert [ast.unparse(c.func) for c in calls] == ["subprocess.run"]
+    assert ast.unparse(calls[0].args[0]) == "[program, 'add', '/dev/stdin']"
+    (find,) = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "find_program"]
+    assert {c.value for c in ast.walk(find) if isinstance(c, ast.Constant) and isinstance(c.value, str)} >= {
+        "draftdesk"
+    }
+    assert "desk.hand_to_draftdesk(program," in (SCRIPTS / "mail.py").read_text(encoding="utf-8")
+    assert "program = desk.find_program()" in (SCRIPTS / "mail.py").read_text(encoding="utf-8")
 
 
 def test_no_code_in_this_repo_can_send_mail():
     for path in SCRIPTS.glob("*.py"):
         source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        # One program may be started: Draft Desk's command line, which has no sending code (only its app sends).
+        assert _subprocess_users(tree) <= ({"hand_to_draftdesk"} if path.name == "draftdesk_handoff.py" else set()), (
+            path.name
+        )
         modules = set()
-        for node in ast.walk(ast.parse(source)):
+        for node in ast.walk(tree):
             if isinstance(node, ast.Import):
                 modules |= {a.name.split(".")[0] for a in node.names}
+                assert not any(a.name == "subprocess" and a.asname for a in node.names), path.name
             elif isinstance(node, ast.ImportFrom):
                 modules.add((node.module or "").split(".")[0])
+                assert node.module != "subprocess", f"{path.name}: from subprocess import"
             elif isinstance(node, ast.Call) and getattr(node.func, "id", "") in ("__import__", "exec", "eval"):
                 raise AssertionError(f"{path.name}: dynamic import or exec")
         assert modules <= ALLOWED_IMPORTS, (path.name, modules - ALLOWED_IMPORTS)

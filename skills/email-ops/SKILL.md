@@ -112,7 +112,11 @@ draft:
 
 Done when the output says `OK draft saved ... NOT sent`. Pass a `NOTE:` line (the reply goes to a Reply-To
 address) on to the user verbatim. The draft keeps everyone who was on the mail; the user edits and sends it from
-their mail client. Sending is always the user's step: this repo has no code that sends mail.
+their mail client. With the Draft Desk hand-over on, a second line follows:
+`OK handed to Draft Desk as <id>: the user reviews and sends it there.` Tell the user the draft waits in Draft Desk.
+A line `ERROR: Draft Desk did not take the draft (...)` means the draft is only in the Drafts folder. Pass that
+line on to the user verbatim and do not save the draft again. Sending is always the user's step: this repo has no
+code that sends mail.
 
 ### 4c: file
 

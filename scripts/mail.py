@@ -41,6 +41,7 @@ from email.utils import formatdate, make_msgid, parsedate_to_datetime
 from html.parser import HTMLParser
 from pathlib import Path
 
+import draftdesk_handoff as desk
 import injection_guard as guard
 
 LOOPBACK = frozenset({"127.0.0.1", "::1", "localhost"})
@@ -465,13 +466,23 @@ def cmd_read(name: str, uid: int, folder: str, save_dir: str | None) -> int:
     return 0
 
 
+def head_lines(
+    msg: Message, fields: tuple[str, ...] = ("From", "Reply-To", "To", "Cc", "Date", "Subject")
+) -> list[str]:
+    """One line per header, with every copy of it: a second Reply-To must be seen and checked like the first."""
+    return [
+        f"{k + ':':<10}{v}" for k in fields if (v := ", ".join(filter(None, (header(x) for x in msg.get_all(k, [])))))
+    ]
+
+
+def thread_text(msg: Message) -> str:
+    """The mail being answered, as plain text for Draft Desk's read-only thread view."""
+    return "\n".join(head_lines(msg, ("From", "To", "Cc", "Date", "Subject"))) + "\n\n" + body_text(msg)
+
+
 def render(msg: Message, name: str, uid: int, display: str) -> str:
     """The mail as the agent gets it. The guard checks every line of it that comes from the sender."""
-    head = [  # every copy of a header: a second Reply-To must be seen and checked like the first
-        f"{k + ':':<10}{v}"
-        for k in ("From", "Reply-To", "To", "Cc", "Date", "Subject")
-        if (v := ", ".join(filter(None, (header(x) for x in msg.get_all(k, [])))))
-    ]
+    head = head_lines(msg)
     files = [name for name, _ in attachment_parts(msg)]
     if files:
         head.append(f"Attachments: {', '.join(files)}")
@@ -650,9 +661,10 @@ def cmd_draft(name: str, uid: int, folder: str, body_file: str) -> int:
     if not body.strip():
         raise Refused("the reply text is empty")
     acct = account(name)
+    program = draftdesk_program(acct)  # checked before anything is saved
     with session(acct) as conn:
         _, display = open_folder(conn, folder, readonly=True)
-        rows = fetch(conn, str(uid), "(UID BODY.PEEK[HEADER])")
+        rows = fetch(conn, str(uid), "(UID BODY.PEEK[])" if program else "(UID BODY.PEEK[HEADER])")
         if uid not in rows:
             raise RuntimeError(f"UID {uid} is not in '{display}' (moved or deleted?)")
         orig = email.message_from_bytes(rows[uid][1])
@@ -669,7 +681,33 @@ def cmd_draft(name: str, uid: int, folder: str, body_file: str) -> int:
     )
     if note := reply_note(orig, draft):
         print(note)
+    return hand_over(program, orig, draft, body, acct, drafts) if program else 0
+
+
+def hand_over(program: str, orig: Message, draft: EmailMessage, body: str, acct: dict, drafts: str) -> int:
+    """The saved draft also to Draft Desk. It is in the Drafts folder already: any failure here must say so."""
+    try:
+        data = desk.as_draft(draft, body, thread_text(orig), acct["draftdesk_account"])
+        item = desk.hand_to_draftdesk(program, data)
+    except Exception as exc:
+        reason = str(exc) if isinstance(exc, RuntimeError) else f"{type(exc).__name__}: {exc}"
+        print(f"ERROR: Draft Desk did not take the draft ({reason}). It is saved in '{drafts}': do not save it again.")
+        return 1
+    print(f"OK handed to Draft Desk as {item}: the user reviews and sends it there.")
     return 0
+
+
+def draftdesk_program(acct: dict) -> str | None:
+    """Draft Desk's command line if this account hands its drafts to Draft Desk (draftdesk_account), else None."""
+    name = acct.get("draftdesk_account")
+    if name is None:
+        return None
+    if not isinstance(name, str) or not name.strip() or name != name.strip():
+        raise Refused("draftdesk_account must be the name of an account in Draft Desk")
+    program = desk.find_program()
+    if not program:
+        raise Refused("draftdesk_account is set, but the draftdesk command was not found (install Draft Desk)")
+    return program
 
 
 def reply_note(orig: Message, draft: EmailMessage) -> str:

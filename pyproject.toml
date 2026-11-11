@@ -17,7 +17,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["injection_guard", "mail"]
+known-first-party = ["draftdesk_handoff", "injection_guard", "mail"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S"]

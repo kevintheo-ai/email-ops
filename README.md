@@ -4,7 +4,7 @@ email-ops is a Claude Code skill plus two Python scripts that go through your in
 
 ## What it does
 
-The skill lists every configured account and sorts each mail into ACT, WAIT, FYI or NOISE. It reads every mail in full, including the noise, and gives a recommendation. When you say so, it saves a reply as a draft, and it files handled mail into a folder. The repo contains no code that can send mail, and a test checks the scripts for that.
+The skill lists every configured account and sorts each mail into ACT, WAIT, FYI or NOISE. It reads every mail in full, including the noise, and gives a recommendation. When you say so, it saves a reply as a draft, and it files handled mail into a folder. The repo contains no code that can send mail, and a test checks the scripts for that. The scripts start no other program, with one exception the same test checks: Draft Desk's command line, when you turn the hand-over on, which cannot send either.
 
 Every mail text goes through a prompt-injection guard before the agent sees it. The guard uses Jev, a model by TypeSafe AI that answers typed questions instead of writing text. A "Noul" is Jev's yes/no answer given as a probability between 0 and 1. The guard's verdict is printed as one line above the mail text.
 
@@ -18,6 +18,7 @@ This is the public, cleaned-up copy of the mail skill I have run on my own inbox
 |---|---|
 | `skills/email-ops/SKILL.md` | The Claude Code skill: list, triage, mail by mail with the guard line, one multiple-choice question per mail, reply drafts, filing. |
 | `scripts/mail.py` | The only way the agent touches the mailbox: `list`, `read`, `folders`, `move`, `draft`, over IMAP with TLS. |
+| `scripts/draftdesk_handoff.py` | Optional hand-over to Draft Desk: builds the draft in Draft Desk's format and runs `draftdesk add`. |
 | `scripts/injection_guard.py` | The guard. Also works alone: `--check-file`, `--check-stdin`, `--dry-run`. |
 | `config/email-ops.example.toml` | Accounts and guard settings. Passwords stay in environment variables. |
 | `tests/`, `docker-compose.yml` | Offline tests, plus tests against a throwaway Dovecot IMAP server in Docker. |
@@ -31,6 +32,7 @@ This is the public, cleaned-up copy of the mail skill I have run on my own inbox
 - The mail text is printed between two marker lines that carry a random code, so a mail cannot fake where its text ends. Anything between the markers belongs to the mail, even a line that looks like a guard line.
 - `move` uses IMAP MOVE and then checks that the mail left the source folder and arrived in the target (by the new ID the server reports, or by the Message-ID). The trash needs `--trash`, and Spam or Junk are never allowed. Folder names with line breaks are refused, so no name can sneak a second command to the server.
 - `draft` writes a reply to everyone on the mail (To is Reply-To or From, Cc is the other recipients without you) into the Drafts folder. It sets In-Reply-To and References so the reply threads, then checks the draft is there. If the reply goes to any address other than the sender's, it prints a NOTE. You edit and send the draft in your own mail client.
+- `draft` with `draftdesk_account` set for the account also hands the draft to Draft Desk. Before it saves anything it checks that `draftdesk` is there and that the setting is a name (a name with blanks around it counts as not a name); if not, it refuses and saves nothing. Then it saves the draft in the Drafts folder as always and runs `draftdesk add` with the same draft: sender, recipients, subject, text and threading, the mail being answered as the read-only thread, and the Message-ID of the draft in the Drafts folder as `mailbox_draft`. After sending, Draft Desk removes that draft from the Drafts folder (if the account in Draft Desk has IMAP set up). If Draft Desk does not take the draft, or anything else fails after saving, it prints an ERROR line with the reason and exits with 1; the draft is then only in the Drafts folder.
 
 ## How the guard decides
 
@@ -128,12 +130,28 @@ ln -s "$PWD/skills/email-ops" ~/.claude/skills/email-ops
 
 Then start Claude Code from a shell where those variables are set and ask "check my mail" or type `/email-ops`. The skill finds the repo through its own folder.
 
+## With Draft Desk (optional)
+
+[Draft Desk](https://github.com/kevintheo-ai/draft-desk) is an outbox for the Mac where you review a draft, change it and send it with a click, with 15 seconds to undo.
+
+The hand-over is optional and off by default. Without it nothing changes. To turn it on for a mailbox, add this line to that account in `config/email-ops.toml`:
+
+```toml
+draftdesk_account = "<name of the account in Draft Desk>"
+```
+
+Draft Desk must be installed (`draftdesk` on PATH or in `~/.local/bin`), and the account in Draft Desk must have your address as a sender. Before it saves anything, `mail.py draft` checks that `draftdesk` is there and that the setting is a name (a name with blanks around it counts as not a name). If not, it refuses and saves nothing.
+
+Then `mail.py draft` saves the draft in the Drafts folder as always and also runs `draftdesk add` with the same draft: sender, recipients, subject, text and threading, with the mail being answered as the read-only thread. The Message-ID of the draft in the Drafts folder goes along as `mailbox_draft`. You review and send the draft in Draft Desk. After sending, Draft Desk removes the draft from the Drafts folder (if the account in Draft Desk has IMAP set up). The code for this is in `scripts/draftdesk_handoff.py`.
+
+If Draft Desk does not take the draft, for example because the account name is wrong, or anything else fails after saving, `mail.py` prints an `ERROR` line with the reason and exits with 1. The draft is then only in the Drafts folder, and the line says not to save it again. Draft Desk checks the account name only when it takes the draft, so a wrong name shows up this way.
+
 ## Tests
 
 ```bash
-.venv/bin/python -m pytest -q                          # 126 offline tests: no network, no key
+.venv/bin/python -m pytest -q                          # 139 offline tests: no network, no key
 docker compose up -d test-imap                         # throwaway Dovecot on 127.0.0.1:31143
-EMAIL_OPS_IMAP_TEST=1 .venv/bin/python -m pytest -q    # plus 7 tests against it
+EMAIL_OPS_IMAP_TEST=1 .venv/bin/python -m pytest -q    # plus 8 tests against it
 ```
 
 ## Known limitations
@@ -146,12 +164,13 @@ EMAIL_OPS_IMAP_TEST=1 .venv/bin/python -m pytest -q    # plus 7 tests against it
 - The guard is a second line. Someone who targets you can test their mail against Jev until it passes. The first line is the skill's rule that mail is data, and that nothing here can send.
 - A server without IMAP MOVE cannot file mail with this tool. Move it in your mail client.
 - The draft keeps everyone who was on the mail. Check the recipients before you send.
+- Draft Desk checks the account name only when it takes the draft, after the draft is already in the Drafts folder. A wrong name leaves the draft in the Drafts folder only, and `mail.py` says so.
 - Links in HTML mails are shown as their text only, without the web address, so the agent cannot open or pass on a link it never sees. Open links from your mail client.
 - When TypeSafe answers slowly, a command can take up to about 40 seconds longer before it exits, because a request that is already running is allowed to finish.
 
 ## How it was built
 
-I built email-ops myself, with the help of AI. I am the architect and the brain: I design it, plan it, set the rules, decide and accept the result. The AI agents carry out the work, and Claude Code writes the code. Several language models from different vendors reviewed the code: Codex, GLM, Muse and Grok. Over two rounds they reported 28 real problems and 4 false alarms. 27 problems are fixed, and the last one is listed under known limitations. I did not vibe code it. The guard rule comes from the measurement above, and the skill is the one I use on my own mail every day.
+I built email-ops myself, with the help of AI. I am the architect and the brain: I design it, plan it, set the rules, decide and accept the result. The AI agents carry out the work, and Claude Code writes the code. Several language models from different vendors reviewed the code: Codex, GLM, Muse and Grok. Over two rounds they reported 28 real problems and 4 false alarms. 27 problems are fixed, and the last one is listed under known limitations. I did not vibe code it. The guard rule comes from the measurement above, and the skill is the one I use on my own mail every day. Codex, GLM, Muse and Grok reviewed the Draft Desk hand-over in one more round and reported 5 real problems, all fixed.
 
 ## What this is not
 
